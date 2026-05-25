@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<title>VRM マウス追従＋拡大縮小</title>
+<style>
+  body { margin: 0; overflow: hidden; background:#222; }
+  #info {
+    position: fixed; left: 10px; top: 10px; color: #fff;
+    font-family: sans-serif; font-size: 12px;
+    background: rgba(0,0,0,0.4); padding: 6px 8px; border-radius: 4px;
+  }
+</style>
+</head>
+<body>
+<div id="info">
+  マウス移動 / タップ移動：顔を向ける<br>
+  マウスホイール / ピンチ：拡大縮小
+</div>
+
+<!-- Three.js & VRM -->
+<script src="https://unpkg.com/three@0.150.0/build/three.min.js"></script>
+<script src="https://unpkg.com/three@0.150.0/examples/js/loaders/GLTFLoader.js"></script>
+<script src="https://unpkg.com/@pixiv/three-vrm@2.0.0/lib/three-vrm.min.js"></script>
+
+<script>
+let scene, camera, renderer;
+let vrm = null;
+let head = null;
+let clock = new THREE.Clock();
+
+// カメラ距離（ズーム用）
+let cameraDistance = 2.0;
+
+// マウス／タップ位置（-1?1）
+let targetX = 0;
+let targetY = 0;
+
+// ピンチ用
+let isPinching = false;
+let pinchStartDist = 0;
+let pinchStartCameraDist = 2.0;
+
+init();
+loadVRM("model.vrm"); // ←ここを自分のVRMファイル名に変更
+animate();
+
+function init() {
+  scene = new THREE.Scene();
+
+  camera = new THREE.PerspectiveCamera(
+    30,
+    window.innerWidth / window.innerHeight,
+    0.1,
+    20
+  );
+  camera.position.set(0, 1.4, cameraDistance);
+
+  renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  document.body.appendChild(renderer.domElement);
+
+  const light = new THREE.DirectionalLight(0xffffff, 1.0);
+  light.position.set(1, 1, 1);
+  scene.add(light);
+
+  const amb = new THREE.AmbientLight(0xffffff, 0.4);
+  scene.add(amb);
+
+  window.addEventListener("resize", onWindowResize);
+
+  // マウス移動で顔向き
+  window.addEventListener("pointermove", onPointerMove);
+
+  // マウスホイールでズーム
+  window.addEventListener("wheel", onWheel, { passive: true });
+
+  // タッチ（ピンチズーム＋顔向き）
+  window.addEventListener("touchstart", onTouchStart, { passive: false });
+  window.addEventListener("touchmove", onTouchMove, { passive: false });
+  window.addEventListener("touchend", onTouchEnd);
+}
+
+function loadVRM(url) {
+  const loader = new THREE.GLTFLoader();
+  loader.load(
+    url,
+    (gltf) => {
+      THREE.VRM.from(gltf).then((loadedVrm) => {
+        vrm = loadedVrm;
+        scene.add(vrm.scene);
+
+        // 正面向きに調整
+        vrm.scene.rotation.y = Math.PI;
+
+        // 頭ボーン取得
+        head = vrm.humanoid.getBoneNode("head");
+      });
+    },
+    undefined,
+    (error) => {
+      console.error(error);
+    }
+  );
+}
+
+function onWindowResize() {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+}
+
+// マウス／タップ位置を -1?1 に正規化
+function setTargetFromClientPos(clientX, clientY) {
+  const x = (clientX / window.innerWidth) * 2 - 1;
+  const y = (clientY / window.innerHeight) * 2 - 1;
+  targetX = x;
+  targetY = y;
+}
+
+function onPointerMove(e) {
+  setTargetFromClientPos(e.clientX, e.clientY);
+}
+
+function onWheel(e) {
+  cameraDistance += e.deltaY * 0.001;
+  cameraDistance = Math.min(Math.max(cameraDistance, 0.7), 5.0);
+}
+
+// タッチ開始
+function onTouchStart(e) {
+  if (e.touches.length === 1) {
+    // 1本指：顔向き
+    setTargetFromClientPos(e.touches[0].clientX, e.touches[0].clientY);
+  } else if (e.touches.length === 2) {
+    // 2本指：ピンチズーム
+    isPinching = true;
+    pinchStartDist = getTouchDistance(e.touches[0], e.touches[1]);
+    pinchStartCameraDist = cameraDistance;
+  }
+}
+
+// タッチ移動
+function onTouchMove(e) {
+  if (e.touches.length === 1 && !isPinching) {
+    setTargetFromClientPos(e.touches[0].clientX, e.touches[0].clientY);
+  } else if (e.touches.length === 2) {
+    e.preventDefault();
+    const dist = getTouchDistance(e.touches[0], e.touches[1]);
+    const scale = dist / pinchStartDist;
+    cameraDistance = pinchStartCameraDist / scale;
+    cameraDistance = Math.min(Math.max(cameraDistance, 0.7), 5.0);
+  }
+}
+
+// タッチ終了
+function onTouchEnd(e) {
+  if (e.touches.length < 2) {
+    isPinching = false;
+  }
+}
+
+function getTouchDistance(t1, t2) {
+  const dx = t1.clientX - t2.clientX;
+  const dy = t1.clientY - t2.clientY;
+  return Math.sqrt(dx * dx + dy * dy);
+}
+
+function animate() {
+  requestAnimationFrame(animate);
+
+  const delta = clock.getDelta();
+
+  if (vrm) {
+    // カメラ距離反映
+    camera.position.set(0, 1.4, cameraDistance);
+    camera.lookAt(0, 1.4, 0);
+
+    // 顔の向き（なめらか補間）
+    if (head) {
+      const maxRotY = 0.6; // 左右
+      const maxRotX = 0.4; // 上下
+
+      head.rotation.y += ((-targetX * maxRotY) - head.rotation.y) * 0.1;
+      head.rotation.x += ((targetY * maxRotX) - head.rotation.x) * 0.1;
+    }
+
+    vrm.update(delta);
+  }
+
+  renderer.render(scene, camera);
+}
+</script>
+</body>
+</html>
